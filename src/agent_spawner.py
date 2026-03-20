@@ -6,6 +6,8 @@ Agent Spawner - Agent生成器
 import json
 import os
 import uuid
+import subprocess
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
@@ -112,7 +114,8 @@ class AgentSpawner:
               task_description: str,
               deliverable: str,
               timeout_minutes: int = 60,
-              context: dict = None) -> SpawnResult:
+              context: dict = None,
+              wait: bool = False) -> SpawnResult:
         """
         生成(spawn)一个新的Agent任务
         
@@ -122,6 +125,7 @@ class AgentSpawner:
             deliverable: 交付物文件名
             timeout_minutes: 超时时间（分钟）
             context: 额外上下文信息
+            wait: 是否等待任务完成
             
         Returns:
             SpawnResult对象
@@ -180,8 +184,17 @@ class AgentSpawner:
                 "timestamp": datetime.now().isoformat()
             })
             
-            # 实际spawn命令（OpenClaw sessions_spawn）
-            spawn_command = self._build_spawn_command(agent_type, task_id)
+            # 真正执行spawn命令（OpenClaw sessions_spawn）
+            spawn_success = self._execute_spawn(agent_type, task_id, task_description, timeout_minutes)
+            
+            if not spawn_success:
+                return SpawnResult(
+                    success=False,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    message=f"Agent spawn执行失败",
+                    timestamp=datetime.now().isoformat()
+                )
             
             return SpawnResult(
                 success=True,
@@ -200,18 +213,36 @@ class AgentSpawner:
                 timestamp=datetime.now().isoformat()
             )
     
-    def spawn_batch(self, tasks: List[dict]) -> List[SpawnResult]:
+    def spawn_batch(self, tasks: List[dict], parallel: bool = True) -> List[SpawnResult]:
         """
         批量生成Agent任务
         
         Args:
             tasks: 任务列表，每项包含agent_type, description等
+            parallel: 是否并行执行（默认True）
             
         Returns:
             SpawnResult列表
         """
-        results = []
-        for task in tasks:
+        if not parallel:
+            # 串行执行（用于调试或资源受限场景）
+            results = []
+            for task in tasks:
+                result = self.spawn(
+                    agent_type=task["agent"],
+                    task_description=task["description"],
+                    deliverable=task.get("deliverable", "result.md"),
+                    timeout_minutes=task.get("timeout", 60),
+                    context=task.get("context")
+                )
+                results.append(result)
+            return results
+        
+        # 并行执行 - 使用线程池同时启动多个Agent
+        results = [None] * len(tasks)
+        threads = []
+        
+        def spawn_task(index: int, task: dict):
             result = self.spawn(
                 agent_type=task["agent"],
                 task_description=task["description"],
@@ -219,21 +250,76 @@ class AgentSpawner:
                 timeout_minutes=task.get("timeout", 60),
                 context=task.get("context")
             )
-            results.append(result)
+            results[index] = result
+        
+        # 启动所有任务
+        for i, task in enumerate(tasks):
+            thread = threading.Thread(target=spawn_task, args=(i, task))
+            threads.append(thread)
+            thread.start()
+        
+        # 等待所有线程完成
+        for thread in threads:
+            thread.join()
+        
         return results
+    
+    def _execute_spawn(self, agent_type: str, task_id: str, task_description: str, timeout_minutes: int = 60) -> bool:
+        """
+        执行真正的OpenClaw spawn命令
+        
+        使用subprocess在后台启动新的Agent会话，实现真正的并行执行
+        """
+        try:
+            # 构建Agent特定的任务提示
+            agent_config = self.get_agent_config(agent_type)
+            role_prompt = f"""你是{agent_config.name}，担任{agent_config.role}。
+
+你的任务是：{task_description}
+
+请独立完成此任务，并将结果保存到指定的交付文件中。
+完成后更新任务状态文件：{self.shared_tasks_dir}/{task_id}.json
+
+你是多Agent系统中的一个Worker，专注于自己的职责领域：
+{', '.join(agent_config.skills)}
+"""
+
+            # 构建openclaw CLI命令
+            cmd = [
+                "openclaw", "sessions_spawn",
+                "--task", role_prompt,
+                "--runtime", "subagent",
+                "--mode", "run",
+                "--label", f"{agent_type}_{task_id}",
+                "--timeout", str(timeout_minutes * 60)
+            ]
+            
+            # 在后台执行，不等待完成（实现真正的并行）
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True  # 确保进程在后台独立运行
+            )
+            
+            return True
+            
+        except Exception as e:
+            print(f"执行spawn命令失败: {e}")
+            return False
     
     def _build_spawn_command(self, agent_type: str, task_id: str) -> str:
         """
-        构建spawn命令
-        
-        注意：这是伪代码，实际应使用OpenClaw的sessions_spawn API
+        构建spawn命令（用于显示/调试）
         """
         return f"""
-# OpenClaw sessions_spawn 命令示例
-openclaw sessions_spawn \
-    --agent {agent_type} \
-    --task {task_id} \
-    --context "~/.openclaw/workspace/shared_tasks/{task_id}.json"
+# OpenClaw sessions_spawn 命令
+openclaw sessions_spawn \\
+    --agent {agent_type} \\
+    --task {task_id} \\
+    --runtime subagent \\
+    --mode run \\
+    --label "{agent_type}_{task_id}"
 """
     
     def get_active_agents(self) -> Dict[str, dict]:
