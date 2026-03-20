@@ -3,7 +3,7 @@
 修复测试 - 验证多Agent并行功能
 """
 import sys
-sys.path.insert(0, '../src')
+sys.path.insert(0, 'src')
 
 from agent_spawner import AgentSpawner
 from task_distributor import TaskDistributor

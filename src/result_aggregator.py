@@ -241,10 +241,13 @@ class HTMLFormatter(ResultFormatter):
             status_class = "status-completed" if result.status == "completed" else "status-failed"
             status_text = "✅ 完成" if result.status == "completed" else "❌ 失败"
             
+            emoji_map = {"🎯":"🎯","💻":"💻","🎨":"🎨","📊":"📊","📈":"📈"}
+            agent_emoji = emoji_map.get(result.agent_type, "🤖")
+            
             html += f"""
         <div class="agent-card">
             <div class="agent-header">
-                <span class="agent-emoji">{{"🎯":"🎯","💻":"💻","🎨":"🎨","📊":"📊","📈":"📈"}.get(result.agent_type, "🤖")}</span>
+                <span class="agent-emoji">{agent_emoji}</span>
                 <span class="agent-name">{result.agent_name} ({result.agent_type})</span>
             </div>
             <p><strong>任务</strong>: {result.task_title}</p>
